@@ -1,0 +1,17 @@
+/* Claude GM Tools: endeavor panel */
+.claude-gm-endeavors .window-content { padding: 6px 8px; gap: 6px; }
+.claude-gm-endeavors section.endeavor { border: 1px solid var(--color-border, #555); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
+.claude-gm-endeavors section.endeavor header { font-weight: bold; margin-bottom: 4px; }
+.claude-gm-endeavors section.endeavor header em { font-weight: normal; opacity: 0.7; }
+.claude-gm-endeavors .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.claude-gm-endeavors .label { width: 72px; font-size: 0.85em; opacity: 0.85; }
+.claude-gm-endeavors .pips { display: flex; flex-wrap: wrap; gap: 3px; flex: 1; }
+.claude-gm-endeavors .count { font-size: 0.85em; opacity: 0.85; min-width: 28px; text-align: right; }
+.claude-gm-endeavors .pip { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; opacity: 0.45; }
+.claude-gm-endeavors .pip.success { color: #3fae5a; }
+.claude-gm-endeavors .pip.failure { color: #c8463d; }
+.claude-gm-endeavors .pip.on { background: currentColor; opacity: 1; }
+.claude-gm-endeavors section.succeeded { border-color: #3fae5a; }
+.claude-gm-endeavors section.failed { border-color: #c8463d; }
+.claude-gm-endeavors footer { margin-top: 4px; font-size: 0.85em; font-style: italic; }
+.claude-gm-endeavors p.empty { opacity: 0.7; font-style: italic; margin: 0; }
