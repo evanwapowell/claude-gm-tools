@@ -7,16 +7,42 @@
     "minimum": "13",
     "verified": "13.351"
   },
-  "authors": [{ "name": "evanwapowell" }],
+  "authors": [
+    {
+      "name": "evanwapowell"
+    }
+  ],
   "relationships": {
-    "systems": [{ "id": "cosmere-rpg", "type": "system", "compatibility": { "minimum": "3.0.0" } }],
+    "systems": [
+      {
+        "id": "cosmere-rpg",
+        "type": "system",
+        "compatibility": {
+          "minimum": "3.0.0"
+        }
+      }
+    ],
     "recommends": [
-      { "id": "cosmere-advanced-encounters", "type": "module", "reason": "action tracking used by GM.startTurn/endTurn" },
-      { "id": "map-coords", "type": "module", "reason": "grid labels that match GM cell labels" }
+      {
+        "id": "cosmere-advanced-encounters",
+        "type": "module",
+        "reason": "action tracking used by GM.startTurn/endTurn"
+      },
+      {
+        "id": "map-coords",
+        "type": "module",
+        "reason": "grid labels that match GM cell labels"
+      }
     ]
   },
-  "scripts": ["scripts/gm-api.js", "scripts/endeavors.js", "scripts/event-log.js"],
-  "styles": ["styles/claude-gm-tools.css"],
+  "scripts": [
+    "scripts/gm-api.js",
+    "scripts/endeavors.js",
+    "scripts/event-log.js"
+  ],
+  "styles": [
+    "styles/claude-gm-tools.css"
+  ],
   "languages": [],
   "url": "https://github.com/evanwapowell/claude-gm-tools",
   "manifest": "https://github.com/evanwapowell/claude-gm-tools/releases/latest/download/module.json",
