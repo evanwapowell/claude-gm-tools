@@ -24,9 +24,11 @@
       const rolls = m.rolls ?? [];
       const r = rolls[0];
       const d20 = r?.dice?.find(d => d.faces === 20)?.results?.find(x => x.active !== false && !x.discarded)?.result;
+      const text = r ? undefined : strip(m.content).slice(0, 240);
+      if (!r && !text) return; // system cards with no text (item/damage cards); damage shows up as a resource event
       push(r ? 'roll' : 'chat', {
         by: m.author?.name, gm: m.author?.isGM || undefined, speaker: m.speaker?.alias,
-        text: r ? undefined : strip(m.content).slice(0, 240),
+        text,
         flavor: r ? strip(m.flavor).slice(0, 120) || undefined : undefined,
         total: r?.total, formula: r?.formula, d20,
         opportunity: rolls.some(x => x.dice.some(d => d.rolledOpportunity)) || d20 === 20 || undefined,
@@ -37,19 +39,20 @@
 
     Hooks.on('updateToken', (td, ch, opts, userId) => {
       if (!('x' in ch || 'y' in ch)) return;
-      push('move', { by: who(userId), piece: td.name, cell: cellAt(td), scene: td.parent?.id });
+      // use the changed coordinates (the document may still report the start while the move animates)
+      push('move', { by: who(userId), piece: td.name, cell: cellAt({ x: ch.x ?? td.x, y: ch.y ?? td.y, parent: td.parent }), scene: td.parent?.id });
     });
 
     Hooks.on('updateActor', (a, ch, opts, userId) => {
       const r = ch.system?.resources; if (!r) return;
       const v = k => r[k]?.value;
       if (v('hea') == null && v('foc') == null && v('inv') == null) return;
-      push('resource', { by: who(userId), actor: a.name, hp: v('hea'), focus: v('foc'), inv: v('inv') });
+      push('resource', { by: who(userId), actor: a.token?.name ?? a.name, hp: v('hea'), focus: v('foc'), inv: v('inv') });
     });
 
     const effect = on => (e, opts, userId) => {
       const statuses = [...(e.statuses ?? [])];
-      push('condition', { by: who(userId), actor: e.parent?.name, on, effect: e.name, statuses: statuses.length ? statuses : undefined });
+      push('condition', { by: who(userId), actor: e.parent?.token?.name ?? e.parent?.name, on, effect: e.name, statuses: statuses.length ? statuses : undefined });
     };
     Hooks.on('createActiveEffect', effect(true));
     Hooks.on('deleteActiveEffect', effect(false));

@@ -5,7 +5,7 @@
 // plus a label like 'C7' (column letters, 1-based row) that matches the Map Coordinates module; moveToken accepts labels.
 // Output keys avoid 'token'/'tokens'/'tokenId' (a browser-automation output filter redacts them): piece/pieces/tokId.
 (() => {
-  const V = '2.0.0';
+  const V = '2.1.0';
   const SYS = 'cosmere-rpg';
   const err = msg => { throw new Error(`[GM] ${msg}`); };
   const lc = s => String(s ?? '').toLowerCase();
@@ -119,6 +119,9 @@
     const dist = canvas.grid.measurePath([T.center, to]).distance;
     // v13 movement API: animates, records movement history, and lets Advanced Encounters spend a Move action.
     if (animate) await td.move([{ x: dest.x, y: dest.y }], { method: 'api' }); else await td.update({ x: dest.x, y: dest.y }, { animate: false });
+    // move() resolves before the document reaches the destination (animation); wait so callers see the final position.
+    for (let i = 0; i < 50 && (td.x !== dest.x || td.y !== dest.y); i++) await new Promise(r => setTimeout(r, 100));
+    if (td.x !== dest.x || td.y !== dest.y) return { moved: false, reason: 'movement did not complete (blocked or constrained by Foundry)', from, to: { col, row, cell: label(col, row) }, now: cellOf(td.x, td.y).cell };
     return { moved: true, piece: td.name, from, to: { col, row, cell: label(col, row) }, distance: dist, units: scene().grid.units };
   }
   /** Move along waypoints ([[col,row],...] or ['C7','D8',...]), checking walls on each leg. */
