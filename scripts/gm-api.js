@@ -5,7 +5,7 @@
 // plus a label like 'C7' (column letters, 1-based row) that matches the Map Coordinates module; moveToken accepts labels.
 // Output keys avoid 'token'/'tokens'/'tokenId' (a browser-automation output filter redacts them): piece/pieces/tokId.
 (() => {
-  const V = '2.1.0';
+  const V = '2.2.0';
   const SYS = 'cosmere-rpg';
   const err = msg => { throw new Error(`[GM] ${msg}`); };
   const lc = s => String(s ?? '').toLowerCase();

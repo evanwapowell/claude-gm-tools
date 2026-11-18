@@ -39,7 +39,8 @@
     "scripts/gm-api.js",
     "scripts/endeavors.js",
     "scripts/event-log.js",
-    "scripts/table.js"
+    "scripts/table.js",
+    "scripts/perception.js"
   ],
   "styles": [
     "styles/claude-gm-tools.css"
