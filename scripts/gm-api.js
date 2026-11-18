@@ -245,6 +245,21 @@
   /** Map Coordinates display for the viewed scene: 'hidden' | 'edges' | 'cells'. Shared with players (scene flag). */
   async function showCoords(mode = 'edges', s = scene()) { const v = { hidden: 1, edges: 2, cells: 3 }[mode] ?? err(`mode ${mode}`); await s.setFlag('map-coords', 'coordinate-state', v); if (canvas?.scene?.id === s.id) await canvas.draw(); return { coords: mode }; }
   async function setHidden(key, hidden = true) { const td = tokenDoc(key); await td.update({ hidden }); return { piece: td.name, hidden }; }
+  // Hand an actor to the players or back to the GM. who: 'player' (all non-GM users become OWNER), 'gm' (non-GM users get
+  // `othersLevel`, default OBSERVER: they can see the sheet but not act), or a user name/id (that user OWNER, other players
+  // `othersLevel`). Linked tokens follow the actor. Returns who owns and who observes afterwards.
+  async function setControl(key, who = 'player', { othersLevel = 'OBSERVER' } = {}) {
+    const a = find(game.actors, key, 'actor');
+    const L = CONST.DOCUMENT_OWNERSHIP_LEVELS;
+    if (!(othersLevel in L)) err(`othersLevel must be one of ${Object.keys(L).join(', ')}`);
+    const players = game.users.filter(u => !u.isGM);
+    const takers = who === 'gm' ? [] : who === 'player' ? players : [find(game.users, who, 'user')];
+    const own = {};
+    for (const u of players) own[u.id] = takers.includes(u) ? L.OWNER : L[othersLevel];
+    await a.update({ ownership: own });
+    const at = lvl => players.filter(u => a.ownership[u.id] === L[lvl]).map(u => u.name);
+    return { actor: a.name, owners: at('OWNER'), observers: at('OBSERVER'), limited: at('LIMITED') };
+  }
 
   // ---------------------------------------------------------------- endeavors (scripts/endeavors.js) and event feed (scripts/event-log.js)
   const EN = () => globalThis.ClaudeGMEndeavors ?? err('endeavor tracker not loaded');
@@ -291,7 +306,7 @@
 
   const api = { V, info, modules, board, sceneInfo, combatState, startCombat, endCombat, setTurnSpeed, markActivated, startTurn, endTurn, nextTurn, nextRound,
     moveToken, moveTokenPath, distance, los, label, parseCell, showCoords, rollSkill, rollItem, roll, lastRolls, lastChat, say,
-    damage, heal, setResource, setCondition, setHidden, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf };
+    damage, heal, setResource, setCondition, setHidden, setControl, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf };
   Hooks.once('ready', () => {
     if (!game.user.isGM) return;
     window.GM = api;
