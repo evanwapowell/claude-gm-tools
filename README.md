@@ -15,7 +15,13 @@ by scripting the world through the browser. It contains only code; no game conte
   token can perceive: its own state and actions, the creatures it can see (hidden tokens never included; names only if
   players could see them), allies, visible walls/doors (secret doors shown as wall) and a small ASCII map, plus `text`, a
   compact rendering for a player agent. `GM.checkIntent(token, {speed, move, actions:[{name, with, target}]})` checks a
-  declared turn for walls, occupied cells, action budget, reach/range, line of effect and visibility (GM-side output).
+  declared turn for walls, occupied cells, action budget (talent actions such as stances included; `free: true` when a
+  talent makes one free), reach/range, line of effect, visibility, the one-Strike-per-hand rule (two-handed weapons,
+  offhand focus) and Recover already used (GM-side output).
+- **Once per scene (Recover):** using the system's Recover action marks the actor (shown in `GM.turn()` and
+  `perceptionFor`); `GM.endCombat()` and `GM.newScene()` reset it; `GM.markRecover(actor, used)` sets it by hand.
+- **PC weapon attacks:** `GM.rollItem`/`GM.npcTurn` accept a PC weapon name ('Longbow' or 'Strike: Longbow') and attack
+  through the weapon's strike action. `npcTurn` attacks take `graze: 'free'` for talents like Combat Training.
 - **Actor handoff:** `GM.setControl(actor, 'player' | 'gm' | userName)` gives players ownership of an actor, or returns it to
   the GM with players as observers.
 - **Event feed (GM clients, in memory):** rolls, chat, moves, resource changes, conditions, combat turns and targeting since a
