@@ -102,12 +102,25 @@
         skill: w.system.strike?.skill ?? undefined, traits: Object.keys(tr).filter(on) };
     });
   }
+  // Top-level action items plus the actions nested in talents (stances and similar live there, e.g. 'Vigilant Stance').
   function actionsOf(a) {
-    return a.items.filter(i => i.type !== 'weapon' && i.system.activation?.cost?.type).map(i => {
+    const out = [], seen = new Set();
+    const add = i => {
+      const c = i.system?.activation?.cost; if (!c?.type) return;
+      const k = lc(i.name); if (seen.has(k)) return; seen.add(k);
       const u = i.system.activation?.uses ?? i.system.resources?.uses;
-      return { name: i.name, cost: cost(i.system.activation.cost), uses: u?.max ? `${u.value ?? '?'}/${u.max}` : undefined };
-    });
+      out.push({ name: i.name, id: i.system.id, cost: cost(c), uses: u?.max ? `${u.value ?? 'unknown'}/${u.max}` : undefined });
+    };
+    for (const i of a.items) {
+      if (i.type === 'weapon') continue;
+      add(i);
+      if (i.type !== 'action') { let nested = []; try { nested = i.actions ?? []; } catch { /* item type without nested actions */ } for (const n of nested) add(n); }
+    }
+    return out;
   }
+  const twoHanded = w => w?.traits?.includes('two_handed');
+  // Once-per-scene Recover (tracked by gm-api.js as an actor flag).
+  const recoverInfo = a => a.type !== 'character' ? null : { used: !!T()._recoverUsed?.(a), die: a.system.recovery?.die?.value ?? null };
   const combatantOf = t => game.combat?.combatants.find(c => c.tokenId === t.id) ?? null;
   const turnInfo = t => {
     const cs = T().combatState?.(); const row = cs?.order?.find(o => o.tokId === t.id);
@@ -163,7 +176,7 @@
       lines.push(row.replace(/\s+$/, ''));
       if (r < r1 && under.trim()) lines.push(under.replace(/\s+$/, ''));
     }
-    return { lines, legend: "@ you · a-z allies · 1-9 others · . open · ~ difficult · | - wall · D closed door · / open door · : see-through barrier · blank = can't see" };
+    return { lines, legend: "@ you · a-z allies · 1-9 others · . open · ~ difficult · | - wall · D closed door · / open door · : see-through barrier · blank: can't see" };
   }
 
   // ------------------------------------------------------------- perceptionFor
@@ -210,7 +223,7 @@
         defenses: { physical: a.system.defenses?.phy?.value, cognitive: a.system.defenses?.cog?.value, spiritual: a.system.defenses?.spi?.value },
         deflect: a.system.deflect?.value || 0, movement: mov?.value ?? mov?.derived, senses: senses?.value ?? senses?.derived,
         conditions: [...(a.statuses ?? [])], injuries: a.items.filter(i => i.type === 'injury').map(i => i.name),
-        turn: turnInfo(self), weapons, actions: actionsOf(a), basicActions: BASIC
+        turn: turnInfo(self), weapons, actions: actionsOf(a).filter(x => x.id !== 'recover'), basicActions: BASIC, recover: recoverInfo(a)
       };
       const m = map ? asciiMap(self, viewer, marks, radius) : null;
       const out = { self: selfInfo, vision: viewer.mode, allies, creatures: others, map: m?.lines, legend: m?.legend };
@@ -224,20 +237,25 @@
     const r = x => (x ? `${x.value}/${x.max}` : '-');
     L.push(`YOU: ${s.name} at ${s.cell}. Health ${r(s.health)}, focus ${r(s.focus)}${s.investiture ? `, Investiture ${r(s.investiture)}` : ''}. Defenses phy ${s.defenses.physical} / cog ${s.defenses.cognitive} / spi ${s.defenses.spiritual}, deflect ${s.deflect}. Move ${s.movement} ${units()} per Move action.`);
     if (s.conditions.length || s.injuries.length) L.push(`Conditions: ${[...s.conditions, ...s.injuries].join(', ')}`);
-    if (s.turn) L.push(`Turn: ${s.turn.speed ?? '?'}${s.turn.actions ? `, actions left ${s.turn.actions}` : ''}${s.turn.reactions ? `, reactions ${s.turn.reactions}` : ''}${s.turn.moveLeft != null ? `, movement left ${s.turn.moveLeft}` : ''}${s.turn.activated ? ' (already acted this round)' : ''}`);
+    if (s.turn) L.push(`Turn: ${s.turn.speed ?? 'unknown speed'}${s.turn.actions ? `, actions left ${s.turn.actions}` : ''}${s.turn.reactions ? `, reactions ${s.turn.reactions}` : ''}${s.turn.moveLeft != null ? `, movement left ${s.turn.moveLeft}` : ''}${s.turn.activated ? ' (already acted this round)' : ''}`);
     for (const w of s.weapons) L.push(`Weapon: ${w.name} (${w.kind}${w.reach ? `, reach ${w.reach}` : ''}${w.range ? `, range ${w.range.normal}${w.range.long ? '/' + w.range.long : ''}` : ''}${w.damage ? `, ${w.damage}` : ''}${w.traits.length ? `, ${w.traits.join(' ')}` : ''})`);
     if (s.actions.length) L.push(`Abilities: ${s.actions.map(x => `${x.name} [${x.cost}${x.uses ? `, ${x.uses}` : ''}]`).join('; ')}`);
     L.push(`Basic actions: ${Object.entries(s.basicActions).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    L.push('Strike: once per hand per turn; a second Strike needs a weapon (or unarmed attack) in the other hand and costs 2 focus; a two-handed weapon allows one Strike.');
+    if (s.recover) L.push(s.recover.used
+      ? 'Recover (once per scene): already used this scene.'
+      : `Recover (once per scene): AVAILABLE. 2 actions: roll your recovery die${s.recover.die ? ` (${s.recover.die})` : ''} and split the result between health and focus.`);
     L.push(`Vision: ${p.vision}`);
     const line = e => `  ${e.label} ${e.identity} at ${e.cell}, ${e.distance} ${units()} ${e.direction}${e.seen === undefined ? ' (out of sight)' : ''}${e.looks ? `, ${e.looks}` : ''}${e.visibleConditions?.length ? `, ${e.visibleConditions.join(' ')}` : ''}${e.inReach ? ', IN REACH' : ''}${e.inRange ? `, in range: ${Object.entries(e.inRange).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${e.cover && e.cover !== 'none' ? `, ${e.cover} cover` : ''}`;
     L.push(`Allies:${p.allies.length ? '' : ' none'}`); p.allies.forEach(e => L.push(line(e)));
     L.push(`Others you can see:${p.creatures.length ? '' : ' none'}`); p.creatures.forEach(e => L.push(line(e)));
     if (p.map) { L.push('Map:'); L.push(...p.map); L.push(p.legend); }
-    return L.join('\n');
+    // The browser extension's output filter blocks text that looks like query strings, so keep '=', '?' and '&' out.
+    return L.join('\n').replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, '');
   }
 
   // ------------------------------------------------------------- checkIntent (GM-side)
-  // intent: { speed: 'fast'|'slow', move: 'D8' | ['C7','D8'], actions: [{ name: 'Strike', with: 'Spear', target: 'E5' | name | id }, ...], focus: n }
+  // intent: { speed: 'fast'|'slow', move: 'D8' | ['C7','D8'], actions: [{ name: 'Strike', with: 'Spear', target: 'E5' | name | id, free: bool }, ...], focus: n }
   function checkIntent(key, intent = {}) {
     const self = tokenOf(key); const a = self.actor; const problems = [], notes = [];
     const ti = turnInfo(self);
@@ -265,14 +283,18 @@
     }
     // actions
     const weapons = weaponsOf(a); const items = actionsOf(a);
-    let spent = moveActions; const targets = [];
+    let spent = moveActions; const targets = []; const strikes = [];
     for (const act of intent.actions ?? []) {
-      const n = lc(act.name); let c = BASIC[n];
+      const n = lc(act.name).replace(/^strike:\s*/, ''); let c = BASIC[n];
       const item = c == null ? items.find(i => lc(i.name) === n) ?? items.find(i => lc(i.name).includes(n)) : null;
       const weaponNamed = weapons.find(w => lc(w.name) === n || lc(w.name) === lc(act.with));
       if (c == null && item) c = item.cost === 'reaction' || item.cost === 'free' ? 0 : Number(item.cost?.split(' ')[0]) || 1;
       if (c == null && weaponNamed) c = 1;
       if (c == null) { problems.push(`unknown action "${act.name}"`); continue; }
+      // A talent can make an action free (e.g. switching stance from Vigilant Stance): {name, free: true}.
+      if (act.free) { notes.push(`${act.name} taken as a free action (GM confirms the talent allows it)`); c = 0; }
+      if (n === 'recover' && T()._recoverUsed?.(a)) problems.push('Recover was already used this scene');
+      if (n === 'strike' || n === 'unarmed attack' || weaponNamed) strikes.push(n === 'unarmed attack' ? { name: 'unarmed' } : (weaponNamed ?? weapons[0] ?? { name: 'unarmed' }));
       spent += c;
       if (act.target) {
         let tgt;
@@ -295,8 +317,19 @@
       }
     }
     if (spent > budget) problems.push(`needs ${spent} actions (${moveActions} for movement) but has ${budget}`);
+    // Strike: repeatable, but each Strike uses a different hand; the offhand Strike costs 2 focus (1 with the Offhand trait).
+    let strikeFocus = 0;
+    if (strikes.length > 1) {
+      const count = new Map(); for (const w of strikes) count.set(w.name, (count.get(w.name) ?? 0) + 1);
+      for (const [name, k] of count) if (k > 1 && name !== 'unarmed') problems.push(`${k} Strikes with ${name}: each Strike must use a different hand`);
+      const th = strikes.find(w => twoHanded(w)); if (th) problems.push(`${th.name} is two-handed: only one Strike per turn with it`);
+      if (strikes.length > 2) problems.push(`${strikes.length} Strikes: at most one per hand`);
+      const off = strikes[1]; strikeFocus = off?.traits?.includes('offhand') ? 1 : 2;
+      notes.push(`second Strike (${off?.name ?? 'offhand'}) is an offhand attack: ${strikeFocus} focus`);
+    }
     const foc = res(a, 'foc');
-    if (intent.focus && foc && intent.focus > foc.value) problems.push(`spends ${intent.focus} focus but has ${foc.value}`);
+    const focusNeed = Math.max(intent.focus ?? 0, strikeFocus);
+    if (focusNeed && foc && focusNeed > foc.value) problems.push(`spends ${focusNeed} focus but has ${foc.value}`);
     return { ok: problems.length === 0, problems, notes, plan: { budget, moveActions, actionCost: spent, moved, destination: pos.cell ?? T().label(pos.col, pos.row) }, targets };
   }
 

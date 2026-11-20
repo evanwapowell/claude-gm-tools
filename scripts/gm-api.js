@@ -5,7 +5,7 @@
 // plus a label like 'C7' (column letters, 1-based row) that matches the Map Coordinates module; moveToken accepts labels.
 // Output keys avoid 'token'/'tokens'/'tokenId' (a browser-automation output filter redacts them): piece/pieces/tokId.
 (() => {
-  const V = '2.2.0';
+  const V = '2.3.0';
   const SYS = 'cosmere-rpg';
   const err = msg => { throw new Error(`[GM] ${msg}`); };
   const lc = s => String(s ?? '').toLowerCase();
@@ -47,7 +47,8 @@
         hp: res(a, 'hea'), focus: res(a, 'foc'), inv: res(a, 'inv')?.max ? res(a, 'inv') : undefined,
         deflect: a?.system?.deflect?.value || undefined,
         def: a ? { phy: a.system.defenses.phy.value, cog: a.system.defenses.cog.value, spi: a.system.defenses.spi.value } : undefined,
-        conditions: statuses(a), injuries: injuries(a).length ? injuries(a) : undefined
+        conditions: statuses(a), injuries: injuries(a).length ? injuries(a) : undefined,
+        recover: a?.type === 'character' ? (recoverUsed(a) ? 'used' : 'available') : undefined
       };
     });
     return { scene: sceneInfo(s), pieces: tokens, combat: combatState(), activeUsers: game.users.filter(u => u.active).map(u => `${u.name}${u.isGM ? ' (GM)' : ''}${u.viewedScene === s.id ? '' : ' [elsewhere]'}`) };
@@ -87,7 +88,14 @@
     const c = game.combat ?? err('no combat');
     const id = tokenDoc(key).id;
     const cb = c.turns.find(x => x.tokenId === id && (!x.isBoss || (bossFast ? x.turnSpeed === 'fast' : x.turnSpeed !== 'fast'))) ?? c.combatants.find(x => x.tokenId === id) ?? err('token not in combat');
-    if (typeof c.setCurrentTurnFromCombatant === 'function') await c.setCurrentTurnFromCombatant(cb); else await cb.markActivated(bossFast);
+    if (typeof c.setCurrentTurnFromCombatant === 'function') {
+      await c.setCurrentTurnFromCombatant(cb);
+      // Advanced Encounters refreshes actions from an async hook that nobody awaits (and skips it when the turn index
+      // doesn't change), so a turn could start with last round's spent actions. Let the hook settle, then refresh
+      // explicitly: onTurnStart is idempotent (fresh actions/reactions, then conditions applied).
+      const real = c.combatants.get(cb.id) ?? cb;
+      if (typeof real.onTurnStart === 'function') { await new Promise(r => setTimeout(r, 250)); await real.onTurnStart(); }
+    } else await cb.markActivated(bossFast);
     return combatState();
   }
   /** End the current turn. With Advanced Encounters: clears the current turn and marks that combatant as having acted. */
@@ -103,7 +111,11 @@
     if (!c.started) await c.startCombat();
     return combatState();
   }
-  async function endCombat() { const c = game.combat ?? err('no combat'); await c.delete(); return { ended: true }; }
+  /** End the combat. The fight was the scene, so once-per-scene options (Recover) reset; pass {newScene:false} to keep them. */
+  async function endCombat({ newScene: reset = true } = {}) {
+    const c = game.combat ?? err('no combat'); await c.delete();
+    return { ended: true, recoverReset: reset ? (await newScene()).reset : undefined };
+  }
 
   // ---------------------------------------------------------------- movement
   /** Move a token to {col,row}. Refuses if a movement wall blocks the straight line, unless ignoreWalls. */
@@ -161,9 +173,21 @@
   }
   /** Use an action/item (attack, ability) through the system's item.use(): posts its chat card with test + damage.
    *  Resource costs are NOT auto-consumed (shouldConsume:false avoids a dialog); deduct focus/inv with setResource. */
+  /** Resolve what to use for an item name. PC weapons ('Longbow', or 'Strike: Longbow') attack through the weapon's
+   *  ephemeral strike action (item.strikeAction); using the weapon item itself posts no attack. NPC actions resolve as-is. */
+  function usableOf(a, itemName) {
+    const n = lc(itemName).replace(/^strike:\s*/, '');
+    const weapons = a.items.filter(i => i.type === 'weapon');
+    const weapon = weapons.find(i => i.id === itemName || lc(i.name) === n) ?? null;
+    let item = weapon;
+    if (!item) { try { item = find(a.items, itemName, 'item'); } catch (e) { item = weapons.find(i => lc(i.name).includes(n)) ?? null; if (!item) throw e; } }
+    let strike = null;
+    if (item.type === 'weapon') { try { strike = item.strikeAction; } catch { strike = null; } }
+    return { item, use: strike ?? item };
+  }
   async function rollItem(actorOrToken, itemName, opts = {}) {
     const a = canvas?.scene?.tokens.find(t => t.id === actorOrToken || lc(t.name) === lc(actorOrToken))?.actor ?? find(game.actors, actorOrToken, 'actor');
-    const item = find(a.items, itemName, 'item');
+    const { use: item } = usableOf(a, itemName);
     const before = game.messages.contents.at(-1)?.id;
     await item.use({ actor: a, configurable: false, advantageMode: opts.advantage ? ADV.advantage : opts.disadvantage ? ADV.disadvantage : undefined, plotDie: !!opts.plotDie, rollMode: opts.rollMode, shouldConsume: false });
     const after = game.messages.contents; const i = after.findIndex(m => m.id === before);
@@ -261,6 +285,24 @@
     return { actor: a.name, owners: at('OWNER'), observers: at('OBSERVER'), limited: at('LIMITED') };
   }
 
+  // ---------------------------------------------------------------- once-per-scene options (Recover)
+  // Recover (2 actions, once per scene) is tracked as an actor flag. It is marked automatically when the system's
+  // 'recover' action is used (GM-side hook, or the chat card a player's use posts), cleared by GM.endCombat() and
+  // GM.newScene(), and can be set by hand with GM.markRecover(). GM.turn() and perceptionFor show it.
+  const MOD = 'claude-gm-tools';
+  const recoverUsed = a => !!a?.getFlag?.(MOD, 'recoverUsed');
+  async function markRecover(key, used = true) {
+    const a = canvas?.scene?.tokens.find(t => t.id === key || lc(t.name) === lc(key))?.actor ?? find(game.actors, key, 'actor');
+    if (used) await a.setFlag(MOD, 'recoverUsed', true); else await a.unsetFlag(MOD, 'recoverUsed');
+    return { actor: a.name, recover: used ? 'used this scene' : 'available' };
+  }
+  /** A new scene starts: every character's once-per-scene options (Recover) are available again. */
+  async function newScene() {
+    const reset = [];
+    for (const a of game.actors.filter(x => recoverUsed(x))) { await a.unsetFlag(MOD, 'recoverUsed'); reset.push(a.name); }
+    return { reset };
+  }
+
   // ---------------------------------------------------------------- endeavors (scripts/endeavors.js) and event feed (scripts/event-log.js)
   const EN = () => globalThis.ClaudeGMEndeavors ?? err('endeavor tracker not loaded');
   /** Start an endeavor: successes needed before failures allowed, e.g. (3/2). show: visible to players (default true). */
@@ -306,10 +348,19 @@
 
   const api = { V, info, modules, board, sceneInfo, combatState, startCombat, endCombat, setTurnSpeed, markActivated, startTurn, endTurn, nextTurn, nextRound,
     moveToken, moveTokenPath, distance, los, label, parseCell, showCoords, rollSkill, rollItem, roll, lastRolls, lastChat, say,
-    damage, heal, setResource, setCondition, setHidden, setControl, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf };
+    damage, heal, setResource, setCondition, setHidden, setControl, markRecover, newScene, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf, _usableOf: usableOf, _recoverUsed: recoverUsed };
   Hooks.once('ready', () => {
     if (!game.user.isGM) return;
     window.GM = api;
     const m = game.modules.get('claude-gm-tools'); if (m) m.api = { ...(m.api ?? {}), gm: api };
+    // Mark Recover as used when anyone (player or GM) uses the system's 'recover' action: its chat card carries the item.
+    Hooks.on('createChatMessage', async msg => {
+      if (!game.user.isActiveGM) return;
+      const uuid = msg.flags?.['cosmere-rpg']?.message?.item; if (!uuid) return;
+      let it = null; try { it = fromUuidSync(uuid); } catch { return; }
+      if (it?.system?.id !== 'recover') return;
+      const a = it.actor ?? it.parent;
+      if (a?.documentName === 'Actor' && !recoverUsed(a)) await a.setFlag(MOD, 'recoverUsed', true);
+    });
   });
 })();

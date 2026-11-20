@@ -19,7 +19,7 @@
     if (p.hidden) tags.push('HIDDEN');
     const res = [`hp ${hp(p.hp)}`, `foc ${hp(p.focus)}`];
     if (p.inv) res.push(`inv ${hp(p.inv)}`);
-    const cond = [...(p.conditions ?? []), ...(p.injuries ?? []).map(i => `injury:${i}`)];
+    const cond = [...(p.conditions ?? []), ...(p.injuries ?? []).map(i => `injury:${i}`), ...(p.recover === 'used' ? ['recover used'] : [])];
     return `${p.name} @${p.cell} ${res.join(' ')}${cond.length ? ` [${cond.join(', ')}]` : ''} (${tags.join(', ')})`;
   }
 
@@ -70,7 +70,7 @@
    *  start/end: start and end its combat turn (default true when it's in the current combat); bossFast: use a boss's fast turn
    *  move: 'C7' or ['C7','D8'] (walls checked; stops the turn if blocked unless continueIfBlocked)
    *  say: an in-character line posted in Foundry chat as the NPC
-   *  attack: { item, target, defense: 'phy'|'cog'|'spi' (default 'phy'), graze: 'auto'|false, crit: 'auto'|false,
+   *  attack: { item, target, defense: 'phy'|'cog'|'spi' (default 'phy'), graze: 'auto'|'free'|false, crit: 'auto'|false,
    *            apply: true, ignoreLos: false, rollMode } or an array of them
    *  skill: { id, dc, advantage, disadvantage, rollMode }
    *  conditions: [[tokenKey, statusId, true|false], ...]
@@ -113,9 +113,9 @@
       const defKey = a.defense ?? 'phy';
       const def = tgt.actor.system.defenses[defKey].value;
       const hit = atkRoll.total >= def;
-      const item = actor.items.find(i => i.id === a.item || i.name.toLowerCase() === String(a.item).toLowerCase())
-        ?? actor.items.find(i => i.name.toLowerCase().includes(String(a.item).toLowerCase()));
-      const type = item?.system?.damage?.type;
+      let used = null; try { used = GM._usableOf(actor, a.item); } catch { /* reported above as no attack roll */ }
+      const item = used?.use ?? null; // PC weapons: the strike action carries the damage formula and type
+      const type = item?.system?.damage?.type ?? used?.item?.system?.damage?.type;
       let outcome = hit ? 'hit' : 'miss', amount = 0;
       if (dmgRoll) {
         const dice = sumDice(dmgRoll), mod = dmgRoll.total - dice;
@@ -126,6 +126,8 @@
             const max = (item?.system?.damage?.formula ?? '').match(/(\d*)d(\d+)/g)?.reduce((n, t) => { const [c2, f] = t.split('d'); return n + (Number(c2 || 1) * Number(f)); }, 0) ?? dice;
             outcome = 'critical'; amount = max + mod;
           }
+        } else if (a.graze === 'free') {
+          outcome = 'graze (free)'; amount = dice; // e.g. Combat Training: once per round, a graze on a miss without focus
         } else if (a.graze !== false && (actor.system.resources.foc?.value ?? 0) >= 1) {
           outcome = 'graze'; amount = dice;
           await GM.setResource(td.id, 'foc', actor.system.resources.foc.value - 1);
