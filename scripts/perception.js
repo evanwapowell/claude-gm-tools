@@ -210,6 +210,12 @@
         };
         if (entry.inRange && !Object.keys(entry.inRange).length) delete entry.inRange;
         entry._cells = how ? oCells : [];
+        // Party members: the abilities the others know about (names and costs only; full summaries are in GM.sheetFor).
+        if (isAlly && o.actor.getFlag?.('claude-gm-tools', 'party')) {
+          entry.abilities = o.actor.items.filter(i => ['talent', 'trait', 'power', 'action'].includes(i.type) && !i.getFlag?.('claude-gm-tools', 'hiddenFromParty'))
+            .map(i => { const c = cost(i.system?.activation?.cost); return c ? `${i.name} [${c}]` : i.name; });
+          const rc = recoverInfo(o.actor); if (rc) entry.recoverUsed = rc.used;
+        }
         (isAlly ? allies : others).push(entry);
       }
       allies.sort((x, y) => x.distance - y.distance); others.sort((x, y) => x.distance - y.distance);
@@ -247,7 +253,11 @@
       : `Recover (once per scene): AVAILABLE. 2 actions: roll your recovery die${s.recover.die ? ` (${s.recover.die})` : ''} and split the result between health and focus.`);
     L.push(`Vision: ${p.vision}`);
     const line = e => `  ${e.label} ${e.identity} at ${e.cell}, ${e.distance} ${units()} ${e.direction}${e.seen === undefined ? ' (out of sight)' : ''}${e.looks ? `, ${e.looks}` : ''}${e.visibleConditions?.length ? `, ${e.visibleConditions.join(' ')}` : ''}${e.inReach ? ', IN REACH' : ''}${e.inRange ? `, in range: ${Object.entries(e.inRange).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${e.cover && e.cover !== 'none' ? `, ${e.cover} cover` : ''}`;
-    L.push(`Allies:${p.allies.length ? '' : ' none'}`); p.allies.forEach(e => L.push(line(e)));
+    L.push(`Allies:${p.allies.length ? '' : ' none'}`);
+    p.allies.forEach(e => {
+      L.push(line(e));
+      if (e.abilities?.length) L.push(`     can: ${e.abilities.join('; ')}${e.recoverUsed != null ? `; Recover ${e.recoverUsed ? 'used' : 'available'}` : ''}`);
+    });
     L.push(`Others you can see:${p.creatures.length ? '' : ' none'}`); p.creatures.forEach(e => L.push(line(e)));
     if (p.map) { L.push('Map:'); L.push(...p.map); L.push(p.legend); }
     // The browser extension's output filter blocks text that looks like query strings, so keep '=', '?' and '&' out.
@@ -333,9 +343,107 @@
     return { ok: problems.length === 0, problems, notes, plan: { budget, moveActions, actionCost: spent, moved, destination: pos.cell ?? T().label(pos.col, pos.row) }, targets };
   }
 
+  // ------------------------------------------------------------- sheets and party (no campaign content: all read from Foundry)
+  //   GM.setParty(['A', 'B', ...]) marks exactly these actors as the party (actor flag), clearing it from all others.
+  //   GM.party() -> party actor names.
+  //   GM.sheetFor(actor, {allies: true}) -> the character's own sheet as compact text, read live from Foundry, plus an
+  //       "allies" block: what each other party member can openly do (role, weapons, abilities with one-line summaries).
+  //       Items flagged hidden-from-party never appear in other members' allies blocks.
+  //   GM.setHiddenFromParty(actor, item, true|false) hides or shows one item (e.g. a power not yet revealed in play).
+  //   Summaries come from the item's own short description (system.description.short); when it is empty, from the
+  //   first mechanical sentences of the full description. GM.setShort(actor, item, text) writes the short description.
+  const MOD = 'claude-gm-tools';
+  const actorOf = key => T()._find(game.actors, key, 'actor');
+  const itemOf = (a, key) => T()._find(a.items, key, `item on ${a.name}`);
+  const num = x => (x && typeof x === 'object' ? (x.value ?? x.derived ?? x.total ?? null) : x ?? null);
+  const loc = s => (s ? game.i18n.localize(s) : s);
+  const stripHtml = h => { const d = document.createElement('div'); d.innerHTML = String(h ?? ''); return (d.textContent ?? '').replace(/\s+/g, ' ').trim(); };
+  // One-line summary: the short description, else the full description minus its italic flavor text.
+  function summaryOf(i, max = 220) {
+    let s = stripHtml(i.system?.description?.short);
+    if (!s) {
+      const d = document.createElement('div'); d.innerHTML = String(i.system?.description?.value ?? '');
+      d.querySelectorAll('em, i').forEach(e => { if (e.textContent.trim().length > 25) e.remove(); });
+      s = (d.textContent ?? '').replace(/\s+/g, ' ').replace(/^(Activation:\s*)?(\[[^\]]*\]\s*)?/i, '').trim();
+    }
+    if (s.length > max) { const cut = s.slice(0, max); s = (cut.lastIndexOf('. ') > max / 2 ? cut.slice(0, cut.lastIndexOf('. ') + 1) : cut.replace(/\s+\S*$/, '') + '…'); }
+    return s;
+  }
+  const hiddenFromParty = i => !!i.getFlag?.(MOD, 'hiddenFromParty');
+  const partyActors = () => game.actors.filter(a => a.getFlag(MOD, 'party'));
+  async function setParty(names = []) {
+    const want = new Set(names.map(n => actorOf(n).id));
+    for (const a of game.actors) {
+      const on = !!a.getFlag(MOD, 'party');
+      if (want.has(a.id) && !on) await a.setFlag(MOD, 'party', true);
+      else if (!want.has(a.id) && on) await a.unsetFlag(MOD, 'party');
+    }
+    return partyActors().map(a => a.name);
+  }
+  async function setHiddenFromParty(actorKey, itemKey, hidden = true) {
+    const i = itemOf(actorOf(actorKey), itemKey);
+    if (hidden) await i.setFlag(MOD, 'hiddenFromParty', true); else await i.unsetFlag(MOD, 'hiddenFromParty');
+    return { item: i.name, hiddenFromParty: hidden };
+  }
+  async function setShort(actorKey, itemKey, text) {
+    const i = itemOf(actorOf(actorKey), itemKey);
+    await i.update({ 'system.description.short': text ? `<p>${foundry.utils.escapeHTML?.(text) ?? text}</p>` : '' });
+    return { item: i.name, short: summaryOf(i) };
+  }
+  const TALENTISH = new Set(['talent', 'trait', 'power', 'action']);
+  const weaponLine = w => `${w.name} (${w.skill ? `${loc(CONFIG.COSMERE?.skills?.[w.skill]?.label) ?? w.skill}, ` : ''}${w.kind}${w.reach ? `, reach ${w.reach}` : ''}${w.range ? `, range ${w.range.normal}${w.range.long ? '/' + w.range.long : ''}` : ''}${w.damage ? `, ${w.damage}` : ''}${w.traits.length ? `, ${w.traits.join(' ')}` : ''})`;
+  function abilityLines(a, { forParty = false, max } = {}) {
+    const out = [];
+    for (const i of a.items) {
+      if (!TALENTISH.has(i.type) || (forParty && hiddenFromParty(i))) continue;
+      const c = cost(i.system?.activation?.cost);
+      out.push(`${i.name}${c ? ` [${c}]` : ''}: ${summaryOf(i, max) || '(no description)'}`);
+    }
+    return out;
+  }
+  function identity(a) {
+    const by = t => a.items.filter(i => i.type === t).map(i => i.name);
+    return { ancestry: by('ancestry'), culture: by('culture'), path: [...by('path'), ...by('specialty')] };
+  }
+  function sheetFor(key, { allies = true, max = 260 } = {}) {
+    const a = actorOf(key), s = a.system, L = [];
+    const id = identity(a), r = x => (x ? `${x.value}/${x.max}` : '-');
+    L.push(`SHEET: ${a.name}. Level ${num(s.level) ?? '?'} · ${[...id.ancestry, ...id.culture].join(', ') || '-'} · ${id.path.join(', ') || '-'}`);
+    const at = s.attributes ?? {};
+    L.push(`Attributes: ${['str', 'spd', 'int', 'wil', 'awa', 'pre'].map(k => `${k.toUpperCase()} ${num(at[k]) ?? '?'}`).join(' / ')}`);
+    const mov = s.movement?.walk?.rate, sen = s.senses?.range;
+    L.push(`Health ${r(res(a, 'hea'))}, focus ${r(res(a, 'foc'))}${res(a, 'inv')?.max ? `, Investiture ${r(res(a, 'inv'))}` : ''}. Defenses phy ${num(s.defenses?.phy)} / cog ${num(s.defenses?.cog)} / spi ${num(s.defenses?.spi)}, deflect ${num(s.deflect) || 0}. Move ${num(mov) ?? '?'} ${canvas?.scene?.grid?.units || 'ft'}, senses ${num(sen) ?? '?'} ${canvas?.scene?.grid?.units || 'ft'}. Recovery die ${num(s.recovery?.die) ?? '?'}.`);
+    const sk = Object.entries(s.skills ?? {}).map(([k, v]) => ({ k, rank: num(v.rank) ?? 0, mod: num(v.mod), cfg: CONFIG.COSMERE?.skills?.[k] }))
+      .filter(x => x.rank > 0 || x.cfg?.core).sort((x, y) => (y.rank - x.rank) || ((y.mod ?? 0) - (x.mod ?? 0)));
+    L.push(`Skills: ${sk.map(x => `${loc(x.cfg?.label) ?? x.k} ${x.mod >= 0 ? '+' : ''}${x.mod}${x.rank ? ` (${x.rank} rank${x.rank === 1 ? '' : 's'})` : ''}`).join(', ')}`);
+    let ex = []; try { const e = s.expertises; ex = [...(e?.values?.() ?? Object.values(e ?? {}))].map(x => loc(x.label) ?? x.id); } catch { /* shape differs */ }
+    if (ex.length) L.push(`Expertises: ${ex.join(', ')}`);
+    const ab = abilityLines(a, { max }); if (ab.length) { L.push('Talents and abilities:'); ab.forEach(x => L.push(`  - ${x}`)); }
+    const ws = weaponsOf(a); if (ws.length) L.push(`Weapons: ${ws.map(weaponLine).join(' · ')}`);
+    const armor = a.items.filter(i => i.type === 'armor').map(i => `${i.name}${i.system.equipped ? '' : ' (not worn)'}`);
+    if (armor.length) L.push(`Armor: ${armor.join(', ')}`);
+    const gear = a.items.filter(i => ['equipment', 'loot'].includes(i.type)).map(i => `${i.name}${(i.system.quantity ?? 1) > 1 ? ` x${i.system.quantity}` : ''}`);
+    if (gear.length) L.push(`Gear: ${gear.join(', ')}`);
+    const money = Object.entries(s.currency ?? {}).map(([k, v]) => { const t = num(v?.total); return t ? `${t} ${k}` : null; }).filter(Boolean);
+    if (money.length) L.push(`Money: ${money.join(', ')}`);
+    const inj = a.items.filter(i => i.type === 'injury').map(i => i.name);
+    L.push(`Conditions: ${[...(a.statuses ?? [])].join(', ') || 'none'}. Injuries: ${inj.join(', ') || 'none'}.`);
+    if (allies) {
+      const others = partyActors().filter(o => o.id !== a.id);
+      L.push(others.length ? 'ALLIES (what each party member can openly do):' : 'ALLIES: none set (GM.setParty).');
+      for (const o of others) {
+        const oid = identity(o);
+        L.push(`* ${o.name}: ${[...oid.path].join(', ') || '-'}. Weapons: ${weaponsOf(o).map(weaponLine).join(' · ') || 'none'}.`);
+        abilityLines(o, { forParty: true, max: 160 }).forEach(x => L.push(`    - ${x}`));
+      }
+    }
+    const text = L.join('\n').replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, '');
+    return { name: a.name, text };
+  }
+
   Hooks.once('ready', () => {
     if (!game.user.isGM || !globalThis.GM) return;
-    Object.assign(globalThis.GM, { perceptionFor, checkIntent });
+    Object.assign(globalThis.GM, { perceptionFor, checkIntent, sheetFor, setParty, party: () => partyActors().map(a => a.name), setHiddenFromParty, setShort });
   });
-  globalThis.ClaudeGMPerception = { perceptionFor, checkIntent, viewerFor };
+  globalThis.ClaudeGMPerception = { perceptionFor, checkIntent, viewerFor, sheetFor, setParty, setHiddenFromParty, setShort };
 })();
