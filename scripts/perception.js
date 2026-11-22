@@ -212,7 +212,7 @@
         entry._cells = how ? oCells : [];
         // Party members: the abilities the others know about (names and costs only; full summaries are in GM.sheetFor).
         if (isAlly && o.actor.getFlag?.('claude-gm-tools', 'party')) {
-          entry.abilities = o.actor.items.filter(i => ['talent', 'trait', 'power', 'action'].includes(i.type) && !i.getFlag?.('claude-gm-tools', 'hiddenFromParty'))
+          entry.abilities = o.actor.items.filter(i => ['talent', 'trait', 'power', 'action'].includes(i.type) && !(i.type === 'action' && i.system?.type === 'basic') && !i.getFlag?.('claude-gm-tools', 'hiddenFromParty'))
             .map(i => { const c = cost(i.system?.activation?.cost); return c ? `${i.name} [${c}]` : i.name; });
           const rc = recoverInfo(o.actor); if (rc) entry.recoverUsed = rc.used;
         }
@@ -357,18 +357,26 @@
   const itemOf = (a, key) => T()._find(a.items, key, `item on ${a.name}`);
   const num = x => (x && typeof x === 'object' ? (x.value ?? x.derived ?? x.total ?? null) : x ?? null);
   const loc = s => (s ? game.i18n.localize(s) : s);
-  const stripHtml = h => { const d = document.createElement('div'); d.innerHTML = String(h ?? ''); return (d.textContent ?? '').replace(/\s+/g, ' ').trim(); };
-  // One-line summary: the short description, else the full description minus its italic flavor text.
+  // Description HTML -> plain text: drops the activation header (the cost is shown separately), turns the system's
+  // action icons into words ("[action]") and content links into their labels.
+  function plainText(html, { dropFlavor = false } = {}) {
+    const d = document.createElement('div'); d.innerHTML = String(html ?? '');
+    d.querySelectorAll('.talent-meta, .talent-activation').forEach(e => e.remove());
+    d.querySelectorAll('.cosmere-icon').forEach(e => { const l = e.getAttribute('aria-label') ?? e.dataset?.tooltip; e.replaceWith(l ? ` [${l.toLowerCase()}] ` : ' '); });
+    if (dropFlavor) d.querySelectorAll('em, i').forEach(e => { if (e.textContent.trim().length > 25) e.remove(); });
+    return (d.textContent ?? '').replace(/@\w+\[[^\]]*\](?:\{([^}]*)\})?/g, (m, lbl) => lbl ?? '')
+      .replace(/\s+/g, ' ').replace(/\s+([.,;:])/g, '$1').replace(/^Activation:\s*/i, '').trim();
+  }
+  const stripHtml = h => plainText(h);
+  // Summary: the item's short description, else the full description minus its italic flavor text.
   function summaryOf(i, max = 220) {
-    let s = stripHtml(i.system?.description?.short);
-    if (!s) {
-      const d = document.createElement('div'); d.innerHTML = String(i.system?.description?.value ?? '');
-      d.querySelectorAll('em, i').forEach(e => { if (e.textContent.trim().length > 25) e.remove(); });
-      s = (d.textContent ?? '').replace(/\s+/g, ' ').replace(/^(Activation:\s*)?(\[[^\]]*\]\s*)?/i, '').trim();
-    }
+    let s = plainText(i.system?.description?.short);
+    if (!s) s = plainText(i.system?.description?.value, { dropFlavor: true });
     if (s.length > max) { const cut = s.slice(0, max); s = (cut.lastIndexOf('. ') > max / 2 ? cut.slice(0, cut.lastIndexOf('. ') + 1) : cut.replace(/\s+\S*$/, '') + '…'); }
     return s;
   }
+  // Basic actions (Strike, Dodge, Recover…) are common to everyone, so ability lists leave them out.
+  const isBasic = i => i.type === 'action' && i.system?.type === 'basic';
   const hiddenFromParty = i => !!i.getFlag?.(MOD, 'hiddenFromParty');
   const partyActors = () => game.actors.filter(a => a.getFlag(MOD, 'party'));
   async function setParty(names = []) {
@@ -395,7 +403,7 @@
   function abilityLines(a, { forParty = false, max } = {}) {
     const out = [];
     for (const i of a.items) {
-      if (!TALENTISH.has(i.type) || (forParty && hiddenFromParty(i))) continue;
+      if (!TALENTISH.has(i.type) || isBasic(i) || (forParty && hiddenFromParty(i))) continue;
       const c = cost(i.system?.activation?.cost);
       out.push(`${i.name}${c ? ` [${c}]` : ''}: ${summaryOf(i, max) || '(no description)'}`);
     }
@@ -405,7 +413,7 @@
     const by = t => a.items.filter(i => i.type === t).map(i => i.name);
     return { ancestry: by('ancestry'), culture: by('culture'), path: [...by('path'), ...by('specialty')] };
   }
-  function sheetFor(key, { allies = true, max = 260 } = {}) {
+  function sheetFor(key, { allies = true, max = 400 } = {}) {
     const a = actorOf(key), s = a.system, L = [];
     const id = identity(a), r = x => (x ? `${x.value}/${x.max}` : '-');
     L.push(`SHEET: ${a.name}. Level ${num(s.level) ?? '?'} · ${[...id.ancestry, ...id.culture].join(', ') || '-'} · ${id.path.join(', ') || '-'}`);
@@ -434,7 +442,7 @@
       for (const o of others) {
         const oid = identity(o);
         L.push(`* ${o.name}: ${[...oid.path].join(', ') || '-'}. Weapons: ${weaponsOf(o).map(weaponLine).join(' · ') || 'none'}.`);
-        abilityLines(o, { forParty: true, max: 160 }).forEach(x => L.push(`    - ${x}`));
+        abilityLines(o, { forParty: true, max: 220 }).forEach(x => L.push(`    - ${x}`));
       }
     }
     const text = L.join('\n').replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, '');
