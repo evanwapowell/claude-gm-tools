@@ -18,6 +18,12 @@ by scripting the world through the browser. It contains only code; no game conte
   declared turn for walls, occupied cells, action budget (talent actions such as stances included; `free: true` when a
   talent makes one free), reach/range, line of effect, visibility, the one-Strike-per-hand rule (two-handed weapons,
   offhand focus) and Recover already used (GM-side output).
+- **Sheets and party (`scripts/perception.js`):** `GM.sheetFor(actor)` renders a character's sheet as compact text, live
+  from Foundry (level, attributes, resources, defenses, skills, expertises, talents with summaries, weapons, armor, gear,
+  money, conditions, injuries), plus an **allies** block: what each other party member can openly do. `GM.setParty([...])`
+  marks the party (actor flag). `GM.setHiddenFromParty(actor, item, true)` keeps an item (say, a power not yet revealed
+  in play) out of other members' views. Summaries use the item's short description; `GM.setShort(actor, item, text)`
+  overrides it. `perceptionFor` also lists each party ally's abilities and whether their Recover is spent.
 - **Once per scene (Recover):** using the system's Recover action marks the actor (shown in `GM.turn()` and
   `perceptionFor`); `GM.endCombat()` and `GM.newScene()` reset it; `GM.markRecover(actor, used)` sets it by hand.
 - **PC weapon attacks:** `GM.rollItem`/`GM.npcTurn` accept a PC weapon name ('Longbow' or 'Strike: Longbow') and attack
