@@ -87,9 +87,9 @@
     const die = st?.die; if (!die) return undefined;
     return `${typeof die === 'object' ? `${die.count ?? 1}${die.size ?? ''}` : die} ${st.damageType ?? ''}`.trim();
   };
-  function weaponsOf(a) {
+  function weaponsOf(a, all = false) {
     const ws = a.items.filter(i => i.type === 'weapon');
-    const eq = ws.filter(i => i.system.equipped); const list = eq.length ? eq : ws;
+    const eq = ws.filter(i => i.system.equipped); const list = (eq.length && !all) ? eq : ws;
     return list.map(w => {
       const atk = w.system.attack ?? {}, tr = w.system.traits ?? {};
       const on = k => tr[k] && (tr[k].active ?? tr[k].defaultActive);
@@ -362,9 +362,11 @@
   function plainText(html, { dropFlavor = false } = {}) {
     const d = document.createElement('div'); d.innerHTML = String(html ?? '');
     d.querySelectorAll('.talent-meta, .talent-activation').forEach(e => e.remove());
-    d.querySelectorAll('.cosmere-icon').forEach(e => { const l = e.getAttribute('aria-label') ?? e.dataset?.tooltip; e.replaceWith(l ? ` [${l.toLowerCase()}] ` : ' '); });
+    const GLYPH = { '0': 'free action', '1': 'action', '2': '2 actions', '3': '3 actions' };
+    d.querySelectorAll('p, div, li, br').forEach(e => e.append(' '));
+    d.querySelectorAll('.cosmere-icon').forEach(e => { const g = GLYPH[e.textContent.trim()]; const l = g ?? (e.getAttribute('aria-label') ?? e.dataset?.tooltip)?.toLowerCase(); e.replaceWith(l ? ` [${l}] ` : ' '); });
     if (dropFlavor) d.querySelectorAll('em, i').forEach(e => { if (e.textContent.trim().length > 25) e.remove(); });
-    return (d.textContent ?? '').replace(/@\w+\[[^\]]*\](?:\{([^}]*)\})?/g, (m, lbl) => lbl ?? '')
+    return (d.textContent ?? '').replace(/\[\[\/r\s*([^\]]+)\]\]/g, '$1').replace(/@\w+\[[^\]]*\](?:\{([^}]*)\})?/g, (m, lbl) => lbl ?? '')
       .replace(/\s+/g, ' ').replace(/\s+([.,;:])/g, '$1').replace(/^Activation:\s*/i, '').trim();
   }
   const stripHtml = h => plainText(h);
@@ -427,12 +429,14 @@
     let ex = []; try { const e = s.expertises; ex = [...(e?.values?.() ?? Object.values(e ?? {}))].map(x => loc(x.label) ?? x.id); } catch { /* shape differs */ }
     if (ex.length) L.push(`Expertises: ${ex.join(', ')}`);
     const ab = abilityLines(a, { max }); if (ab.length) { L.push('Talents and abilities:'); ab.forEach(x => L.push(`  - ${x}`)); }
-    const ws = weaponsOf(a); if (ws.length) L.push(`Weapons: ${ws.map(weaponLine).join(' · ')}`);
+    const ws = weaponsOf(a, true); if (ws.length) L.push(`Weapons: ${ws.map(weaponLine).join(' · ')}`);
     const armor = a.items.filter(i => i.type === 'armor').map(i => `${i.name}${i.system.equipped ? '' : ' (not worn)'}`);
     if (armor.length) L.push(`Armor: ${armor.join(', ')}`);
-    const gear = a.items.filter(i => ['equipment', 'loot'].includes(i.type)).map(i => `${i.name}${(i.system.quantity ?? 1) > 1 ? ` x${i.system.quantity}` : ''}`);
+    // Sphere items are summed in the Money line instead.
+    const coin = i => i.type === 'loot' && /\b(chip|mark|broam)s?\b/i.test(i.name);
+    const gear = a.items.filter(i => ['equipment', 'loot'].includes(i.type) && !coin(i)).map(i => `${i.name}${(i.system.quantity ?? 1) > 1 ? ` x${i.system.quantity}` : ''}`);
     if (gear.length) L.push(`Gear: ${gear.join(', ')}`);
-    const money = Object.entries(s.currency ?? {}).map(([k, v]) => { const t = num(v?.total); return t ? `${t} ${k}` : null; }).filter(Boolean);
+    const money = Object.entries(s.currency ?? {}).map(([k, v]) => { const t = num(v?.total); return t ? (k === 'spheres' ? `${t} marks in spheres` : `${t} (${k})`) : null; }).filter(Boolean);
     if (money.length) L.push(`Money: ${money.join(', ')}`);
     const inj = a.items.filter(i => i.type === 'injury').map(i => i.name);
     L.push(`Conditions: ${[...(a.statuses ?? [])].join(', ') || 'none'}. Injuries: ${inj.join(', ') || 'none'}.`);
@@ -441,8 +445,8 @@
       L.push(others.length ? 'ALLIES (what each party member can openly do):' : 'ALLIES: none set (GM.setParty).');
       for (const o of others) {
         const oid = identity(o);
-        L.push(`* ${o.name}: ${[...oid.path].join(', ') || '-'}. Weapons: ${weaponsOf(o).map(weaponLine).join(' · ') || 'none'}.`);
-        abilityLines(o, { forParty: true, max: 220 }).forEach(x => L.push(`    - ${x}`));
+        L.push(`* ${o.name}: ${[...oid.path].join(', ') || '-'}. Weapons: ${weaponsOf(o, true).map(weaponLine).join(' · ') || 'none'}.`);
+        abilityLines(o, { forParty: true, max: 320 }).forEach(x => L.push(`    - ${x}`));
       }
     }
     const text = L.join('\n').replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, '');
