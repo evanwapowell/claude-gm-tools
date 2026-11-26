@@ -5,7 +5,7 @@
 // plus a label like 'C7' (column letters, 1-based row) that matches the Map Coordinates module; moveToken accepts labels.
 // Output keys avoid 'token'/'tokens'/'tokenId' (a browser-automation output filter redacts them): piece/pieces/tokId.
 (() => {
-  const V = '2.3.0';
+  const V = '2.4.0';
   const SYS = 'cosmere-rpg';
   const err = msg => { throw new Error(`[GM] ${msg}`); };
   const lc = s => String(s ?? '').toLowerCase();
@@ -17,6 +17,16 @@
   };
   const scene = () => canvas?.scene ?? err('no scene is being viewed');
   const tokenDoc = key => find(scene().tokens, key, 'token');
+  // The actor behind a key: a token on the viewed scene first, else a world actor by id or name. Only a LINKED actor can
+  // stand in for a missing token: an unlinked actor's sidebar entry is a template, not the creature on some scene.
+  function actorFor(key) {
+    if (key?.documentName === 'Actor') return { actor: key, name: key.name };
+    let td = null; if (canvas?.scene) { try { td = tokenDoc(key); } catch { td = null; } }
+    if (td) return { actor: td.actor ?? err(`token ${td.name} has no actor`), name: td.name };
+    let a; try { a = find(game.actors, key, 'actor'); } catch { err(`no token on the viewed scene and no actor matches ${key}`); }
+    if (!a.prototypeToken?.actorLink) err(`${a.name} is an unlinked actor with no token on the viewed scene: nothing to update (view the scene that has its token)`);
+    return { actor: a, name: a.name, viaActor: true };
+  }
   const origin = () => { const d = canvas.dimensions; const o = canvas.grid.getOffset({ x: d.sceneX + 1, y: d.sceneY + 1 }); return { i: o.i, j: o.j }; };
   const colName = c => { let s = '', n = c + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
   const label = (col, row) => `${colName(col)}${row + 1}`;
@@ -48,6 +58,7 @@
         deflect: a?.system?.deflect?.value || undefined,
         def: a ? { phy: a.system.defenses.phy.value, cog: a.system.defenses.cog.value, spi: a.system.defenses.spi.value } : undefined,
         conditions: statuses(a), injuries: injuries(a).length ? injuries(a) : undefined,
+        stance: globalThis.ClaudeGMPerception?.stanceOf?.(a)?.name,
         recover: a?.type === 'character' ? (recoverUsed(a) ? 'used' : 'available') : undefined
       };
     });
@@ -161,18 +172,20 @@
   }
 
   // ---------------------------------------------------------------- rolls
-  const ADV = { advantage: 'advantage', disadvantage: 'disadvantage' };
+  // One advantage mode per roll; an advantage and a disadvantage cancel out.
+  const advMode = o => (o.advantage && !o.disadvantage ? 'advantage' : o.disadvantage && !o.advantage ? 'disadvantage' : undefined);
   /** Skill test through the system (posts the normal Cosmere chat card). opts: {advantage|disadvantage: true, plotDie: true, dc, rollMode, attribute} */
   async function rollSkill(actorOrToken, skill, opts = {}) {
     const a = canvas?.scene?.tokens.find(t => t.id === actorOrToken || lc(t.name) === lc(actorOrToken))?.actor ?? find(game.actors, actorOrToken, 'actor');
     if (!a.system.skills?.[skill]) err(`unknown skill id ${skill}; ids: ${Object.keys(a.system.skills).join(',')}`);
     const before = game.messages.contents.at(-1)?.id;
-    await a.rollSkill(skill, { configurable: false, advantageMode: opts.advantage ? ADV.advantage : opts.disadvantage ? ADV.disadvantage : undefined, plotDie: !!opts.plotDie, rollMode: opts.rollMode, attribute: opts.attribute });
+    await a.rollSkill(skill, { configurable: false, advantageMode: advMode(opts), plotDie: !!opts.plotDie, rollMode: opts.rollMode, attribute: opts.attribute });
     const msg = game.messages.contents.at(-1);
     return msg && msg.id !== before ? summarize(msg, opts.dc) : { note: 'no new chat message; check the chat log' };
   }
   /** Use an action/item (attack, ability) through the system's item.use(): posts its chat card with test + damage.
-   *  Resource costs are NOT auto-consumed (shouldConsume:false avoids a dialog); deduct focus/inv with setResource. */
+   *  Resource costs are NOT consumed here (shouldConsume:false avoids a dialog): deduct focus/inv with setResource.
+   *  A use from the sheet or action HUD (a player, or the GM clicking) DOES consume through the system: don't deduct again. */
   /** Resolve what to use for an item name. PC weapons ('Longbow', or 'Strike: Longbow') attack through the weapon's
    *  ephemeral strike action (item.strikeAction); using the weapon item itself posts no attack. NPC actions resolve as-is. */
   function usableOf(a, itemName) {
@@ -183,13 +196,19 @@
     if (!item) { try { item = find(a.items, itemName, 'item'); } catch (e) { item = weapons.find(i => lc(i.name).includes(n)) ?? null; if (!item) throw e; } }
     let strike = null;
     if (item.type === 'weapon') { try { strike = item.strikeAction; } catch { strike = null; } }
+    // Talents and other non-action items are used through their first nested action (as the system's use-item does).
+    else if (item.type !== 'action') { try { strike = item.defaultAction ?? null; } catch { strike = null; } }
     return { item, use: strike ?? item };
   }
   async function rollItem(actorOrToken, itemName, opts = {}) {
     const a = canvas?.scene?.tokens.find(t => t.id === actorOrToken || lc(t.name) === lc(actorOrToken))?.actor ?? find(game.actors, actorOrToken, 'actor');
-    const { use: item } = usableOf(a, itemName);
+    const { item: top, use: item } = usableOf(a, itemName);
     const before = game.messages.contents.at(-1)?.id;
-    await item.use({ actor: a, configurable: false, advantageMode: opts.advantage ? ADV.advantage : opts.disadvantage ? ADV.disadvantage : undefined, plotDie: !!opts.plotDie, rollMode: opts.rollMode, shouldConsume: false });
+    await item.use({ actor: a, configurable: false, advantageMode: advMode(opts), plotDie: !!opts.plotDie, rollMode: opts.rollMode, shouldConsume: false });
+    // Stance talents (system 3.1.2 handbook data): the cost sits on a nested action that has no modality, so using it
+    // never enters the stance. Enter it here with the system's own setMode (sets the flag, switches the stance effects).
+    const mod = top.type === 'talent' ? top.system?.modality : null;
+    if (mod && top.system?.id && a.getFlag(SYS, `mode.${mod}`) !== top.system.id) { await a.setMode(mod, top.system.id); await new Promise(r => setTimeout(r, 300)); }
     const after = game.messages.contents; const i = after.findIndex(m => m.id === before);
     return after.slice(i + 1).map(m => summarize(m, opts.dc));
   }
@@ -247,24 +266,48 @@
   }
 
   // ---------------------------------------------------------------- actor state
+  // damage, heal, setResource and setCondition take a token on the viewed scene or, without one, a linked actor
+  // (result has viaActor: true).
+  /** Damage through the system (deflect and immunities applied). amount: a number, or a list of numbers or
+   *  {amount, type} for one hit with several parts (e.g. [10, 4] for a hit plus a charge bonus). A list is ONE
+   *  applyDamage call, so deflect is subtracted once from the deflectable total; separate calls subtract it each time. */
   async function damage(key, amount, type) {
-    const a = tokenDoc(key).actor; const before = res(a, 'hea');
-    await a.applyDamage([{ amount, type }], {});
-    return { piece: a.name, type: type ?? 'untyped', hp: { before: before.value, after: res(a, 'hea').value, max: before.max } };
+    const { actor: a, name, viaActor } = actorFor(key); const before = res(a, 'hea');
+    const parts = [].concat(amount).map(x => (x && typeof x === 'object' ? { amount: Number(x.amount), type: x.type ?? type } : { amount: Number(x), type }));
+    if (!parts.length || parts.some(p => !Number.isFinite(p.amount))) err(`damage: bad amount ${JSON.stringify(amount)}`);
+    await a.applyDamage(parts, {});
+    return { piece: name, type: type ?? ([...new Set(parts.map(p => p.type).filter(Boolean))].join('+') || 'untyped'), amounts: parts.length > 1 ? parts.map(p => p.amount) : undefined,
+      hp: { before: before.value, after: res(a, 'hea').value, max: before.max }, viaActor };
   }
   async function heal(key, amount) {
-    const a = tokenDoc(key).actor; const before = res(a, 'hea');
+    const { actor: a, name, viaActor } = actorFor(key); const before = res(a, 'hea');
     await a.applyHealing(amount); // system: applyDamage with type 'heal'
-    return { piece: a.name, hp: { before: before.value, after: res(a, 'hea').value, max: before.max } };
+    return { piece: name, hp: { before: before.value, after: res(a, 'hea').value, max: before.max }, viaActor };
   }
   async function setResource(key, res_, value) {
-    const a = tokenDoc(key).actor; await a.update({ [`system.resources.${res_}.value`]: value }); return { piece: a.name, [res_]: res(a, res_) };
+    const { actor: a, name, viaActor } = actorFor(key);
+    if (!a.system.resources?.[res_]) err(`unknown resource ${res_}; ids: ${Object.keys(a.system.resources ?? {}).join(',')}`);
+    await a.update({ [`system.resources.${res_}.value`]: value }); return { piece: name, [res_]: res(a, res_), viaActor };
   }
   /** Toggle a condition by status id (see CONFIG.statusEffects ids, e.g. 'prone', 'surprised'). */
   async function setCondition(key, statusId, active = true) {
     if (!CONFIG.statusEffects.some(s => s.id === statusId)) err(`unknown status ${statusId}`);
-    const td = tokenDoc(key); await td.actor.toggleStatusEffect(statusId, { active });
-    return { piece: td.name, conditions: statuses(td.actor) };
+    const { actor: a, name, viaActor } = actorFor(key); await a.toggleStatusEffect(statusId, { active });
+    return { piece: name, conditions: statuses(a), viaActor };
+  }
+
+  // ---------------------------------------------------------------- long text, page by page
+  // The browser tool cuts a result at about 1,000 characters. sheetFor, perceptionFor and turn keep their full text;
+  // GM.page(1), GM.page(2), ... return it in pieces (split at line ends) without recomputing (turn() would consume events).
+  let kept = { from: null, text: '' };
+  const keep = (from, text) => { kept = { from, text: String(text ?? '') }; return text; };
+  function page(i = 1, size = 900) {
+    if (!kept.text) err('nothing to page: call GM.sheetFor, GM.perceptionFor or GM.turn first');
+    const pages = []; let rest = kept.text.replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, ''); // output-filter safe
+    while (rest.length > size) { let cut = rest.lastIndexOf('\n', size); if (cut < size / 2) cut = size; pages.push(rest.slice(0, cut)); rest = rest.slice(cut).replace(/^\n/, ''); }
+    pages.push(rest);
+    if (!(i >= 1 && i <= pages.length)) err(`page ${i}: there are ${pages.length} pages`);
+    return { from: kept.from, page: i, of: pages.length, text: pages[i - 1] };
   }
   /** Map Coordinates display for the viewed scene: 'hidden' | 'edges' | 'cells'. Shared with players (scene flag). */
   async function showCoords(mode = 'edges', s = scene()) { const v = { hidden: 1, edges: 2, cells: 3 }[mode] ?? err(`mode ${mode}`); await s.setFlag('map-coords', 'coordinate-state', v); if (canvas?.scene?.id === s.id) await canvas.draw(); return { coords: mode }; }
@@ -348,7 +391,7 @@
 
   const api = { V, info, modules, board, sceneInfo, combatState, startCombat, endCombat, setTurnSpeed, markActivated, startTurn, endTurn, nextTurn, nextRound,
     moveToken, moveTokenPath, distance, los, label, parseCell, showCoords, rollSkill, rollItem, roll, lastRolls, lastChat, say,
-    damage, heal, setResource, setCondition, setHidden, setControl, markRecover, newScene, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf, _usableOf: usableOf, _recoverUsed: recoverUsed };
+    damage, heal, setResource, setCondition, page, _keep: keep, _actorFor: actorFor, setHidden, setControl, markRecover, newScene, endeavor, endeavorMark, endeavorState, endeavorShow, endeavorEnd, viewScene, activateScene, playPlaylist, stopPlaylist, nowPlaying, events, eventsLast, _find: find, _cellAt: cellOf, _usableOf: usableOf, _recoverUsed: recoverUsed };
   Hooks.once('ready', () => {
     if (!game.user.isGM) return;
     window.GM = api;

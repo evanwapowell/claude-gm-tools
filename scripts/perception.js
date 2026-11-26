@@ -105,18 +105,47 @@
   // Top-level action items plus the actions nested in talents (stances and similar live there, e.g. 'Vigilant Stance').
   function actionsOf(a) {
     const out = [], seen = new Set();
-    const add = i => {
+    // A stance's cost sits on an action nested in the stance talent; stanceId is the talent's id (what the flag holds).
+    const add = (i, parent) => {
       const c = i.system?.activation?.cost; if (!c?.type) return;
       const k = lc(i.name); if (seen.has(k)) return; seen.add(k);
       const u = i.system.activation?.uses ?? i.system.resources?.uses;
-      out.push({ name: i.name, id: i.system.id, cost: cost(c), uses: u?.max ? `${u.value ?? 'unknown'}/${u.max}` : undefined });
+      const st = i.system?.modality === 'stance' ? i : parent?.system?.modality === 'stance' ? parent : null;
+      out.push({ name: i.name, id: i.system.id, cost: cost(c), uses: u?.max ? `${u.value ?? 'unknown'}/${u.max}` : undefined, stanceId: st?.system?.id });
     };
     for (const i of a.items) {
       if (i.type === 'weapon') continue;
       add(i);
-      if (i.type !== 'action') { let nested = []; try { nested = i.actions ?? []; } catch { /* item type without nested actions */ } for (const n of nested) add(n); }
+      if (i.type !== 'action') { let nested = []; try { nested = i.actions ?? []; } catch { /* item type without nested actions */ } for (const n of nested) add(n, i); }
     }
     return out;
+  }
+  // Active stance. The system's "modality" feature: using a stance talent (system.modality 'stance') sets the actor flag
+  // cosmere-rpg.mode.stance to that talent's system id and turns on its effect; 'End Stance' sets it to 'end-stance'.
+  // Returns {id, name, summary} (summary: the talent's own short description) or null.
+  function stanceOf(a) {
+    let id = null; try { id = a?.getFlag?.(SYS, 'mode.stance') ?? null; } catch { id = null; }
+    if (!id || id === 'end-stance') return null;
+    const it = a.items.find(i => i.system?.modality === 'stance' && i.system?.id === id);
+    if (!it) return { id, name: id, summary: '' }; // flag set, but the actor no longer has that talent
+    if (it.type !== 'talent') return null; // an 'End Stance'-style action
+    return { id, name: it.name, summary: stanceRule(it) };
+  }
+  const isVigilant = s => /vigilant/i.test(`${s?.id ?? ''} ${s?.name ?? ''}`);
+  // Enter a stance (talent name or id) or end it (null), with the system's setMode: sets the flag and turns that stance's
+  // effect on and the others off (e.g. Stonestance's +1 deflect). For a stance a player used from the sheet, which
+  // in system 3.1.2 only posts a chat card. Token on the viewed scene, else a linked actor.
+  async function setStance(key, stance = null) {
+    const { actor: a, name } = T()._actorFor(key);
+    const talents = a.items.filter(i => i.type === 'talent' && i.system?.modality === 'stance');
+    let id = 'end-stance'; // what the system's own End Stance action sets
+    if (stance) {
+      const t = talents.find(i => i.system.id === stance || i.id === stance) ?? talents.find(i => lc(i.name) === lc(stance)) ?? talents.find(i => lc(i.name).includes(lc(stance)));
+      id = t?.system?.id ?? err(`${name} has no stance talent matching ${stance}; has: ${talents.map(i => i.name).join(', ') || 'none'}`);
+    }
+    await a.setMode('stance', id);
+    await new Promise(r => setTimeout(r, 300)); // setMode switches the effects without awaiting them
+    return { piece: name, stance: stanceOf(a)?.name ?? 'none', deflect: a.system.deflect?.value ?? 0 };
   }
   const twoHanded = w => w?.traits?.includes('two_handed');
   // Once-per-scene Recover (tracked by gm-api.js as an actor flag).
@@ -215,6 +244,7 @@
           entry.abilities = o.actor.items.filter(i => ['talent', 'trait', 'power', 'action'].includes(i.type) && !(i.type === 'action' && i.system?.type === 'basic') && !i.getFlag?.('claude-gm-tools', 'hiddenFromParty'))
             .map(i => { const c = cost(i.system?.activation?.cost); return c ? `${i.name} [${c}]` : i.name; });
           const rc = recoverInfo(o.actor); if (rc) entry.recoverUsed = rc.used;
+          entry.stance = stanceOf(o.actor)?.name;
         }
         (isAlly ? allies : others).push(entry);
       }
@@ -229,11 +259,12 @@
         defenses: { physical: a.system.defenses?.phy?.value, cognitive: a.system.defenses?.cog?.value, spiritual: a.system.defenses?.spi?.value },
         deflect: a.system.deflect?.value || 0, movement: mov?.value ?? mov?.derived, senses: senses?.value ?? senses?.derived,
         conditions: [...(a.statuses ?? [])], injuries: a.items.filter(i => i.type === 'injury').map(i => i.name),
-        turn: turnInfo(self), weapons, actions: actionsOf(a).filter(x => x.id !== 'recover'), basicActions: BASIC, recover: recoverInfo(a)
+        stance: stanceOf(a) ?? undefined, turn: turnInfo(self), weapons, actions: actionsOf(a).filter(x => x.id !== 'recover'), basicActions: BASIC, recover: recoverInfo(a)
       };
       const m = map ? asciiMap(self, viewer, marks, radius) : null;
       const out = { self: selfInfo, vision: viewer.mode, allies, creatures: others, map: m?.lines, legend: m?.legend };
       out.text = render(out);
+      T()._keep?.('perceptionFor', out.text); // GM.page(i) for the full text
       return out;
     } finally { viewer.done(); }
   }
@@ -243,6 +274,7 @@
     const r = x => (x ? `${x.value}/${x.max}` : '-');
     L.push(`YOU: ${s.name} at ${s.cell}. Health ${r(s.health)}, focus ${r(s.focus)}${s.investiture ? `, Investiture ${r(s.investiture)}` : ''}. Defenses phy ${s.defenses.physical} / cog ${s.defenses.cognitive} / spi ${s.defenses.spiritual}, deflect ${s.deflect}. Move ${s.movement} ${units()} per Move action.`);
     if (s.conditions.length || s.injuries.length) L.push(`Conditions: ${[...s.conditions, ...s.injuries].join(', ')}`);
+    if (s.stance) L.push(`Stance: ${s.stance.name}${s.stance.summary ? `. ${s.stance.summary}` : ''}`);
     if (s.turn) L.push(`Turn: ${s.turn.speed ?? 'unknown speed'}${s.turn.actions ? `, actions left ${s.turn.actions}` : ''}${s.turn.reactions ? `, reactions ${s.turn.reactions}` : ''}${s.turn.moveLeft != null ? `, movement left ${s.turn.moveLeft}` : ''}${s.turn.activated ? ' (already acted this round)' : ''}`);
     for (const w of s.weapons) L.push(`Weapon: ${w.name} (${w.kind}${w.reach ? `, reach ${w.reach}` : ''}${w.range ? `, range ${w.range.normal}${w.range.long ? '/' + w.range.long : ''}` : ''}${w.damage ? `, ${w.damage}` : ''}${w.traits.length ? `, ${w.traits.join(' ')}` : ''})`);
     if (s.actions.length) L.push(`Abilities: ${s.actions.map(x => `${x.name} [${x.cost}${x.uses ? `, ${x.uses}` : ''}]`).join('; ')}`);
@@ -252,7 +284,7 @@
       ? 'Recover (once per scene): already used this scene.'
       : `Recover (once per scene): AVAILABLE. 2 actions: roll your recovery die${s.recover.die ? ` (${s.recover.die})` : ''} and split the result between health and focus.`);
     L.push(`Vision: ${p.vision}`);
-    const line = e => `  ${e.label} ${e.identity} at ${e.cell}, ${e.distance} ${units()} ${e.direction}${e.seen === undefined ? ' (out of sight)' : ''}${e.looks ? `, ${e.looks}` : ''}${e.visibleConditions?.length ? `, ${e.visibleConditions.join(' ')}` : ''}${e.inReach ? ', IN REACH' : ''}${e.inRange ? `, in range: ${Object.entries(e.inRange).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${e.cover && e.cover !== 'none' ? `, ${e.cover} cover` : ''}`;
+    const line = e => `  ${e.label} ${e.identity} at ${e.cell}, ${e.distance} ${units()} ${e.direction}${e.seen === undefined ? ' (out of sight)' : ''}${e.looks ? `, ${e.looks}` : ''}${e.visibleConditions?.length ? `, ${e.visibleConditions.join(' ')}` : ''}${e.stance ? `, in ${e.stance}` : ''}${e.inReach ? ', IN REACH' : ''}${e.inRange ? `, in range: ${Object.entries(e.inRange).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${e.cover && e.cover !== 'none' ? `, ${e.cover} cover` : ''}`;
     L.push(`Allies:${p.allies.length ? '' : ' none'}`);
     p.allies.forEach(e => {
       L.push(line(e));
@@ -294,6 +326,7 @@
     // actions
     const weapons = weaponsOf(a); const items = actionsOf(a);
     let spent = moveActions; const targets = []; const strikes = [];
+    let stance = stanceOf(a); const stanceAtStart = stance?.name;
     for (const act of intent.actions ?? []) {
       const n = lc(act.name).replace(/^strike:\s*/, ''); let c = BASIC[n];
       const item = c == null ? items.find(i => lc(i.name) === n) ?? items.find(i => lc(i.name).includes(n)) : null;
@@ -303,6 +336,12 @@
       if (c == null) { problems.push(`unknown action "${act.name}"`); continue; }
       // A talent can make an action free (e.g. switching stance from Vigilant Stance): {name, free: true}.
       if (act.free) { notes.push(`${act.name} taken as a free action (GM confirms the talent allows it)`); c = 0; }
+      // Stances: entering one is done by using its talent; from Vigilant Stance, entering another stance is free.
+      if (item?.stanceId && item.stanceId !== 'end-stance') {
+        if (stance && item.stanceId === stance.id) notes.push(`already in ${stance.name}`);
+        else if (stance && isVigilant(stance) && c > 0) { notes.push(`${item.name}: free action (entering a stance from ${stance.name})`); c = 0; }
+        stance = { id: item.stanceId, name: item.name };
+      } else if (item?.stanceId === 'end-stance') stance = null;
       if (n === 'recover' && T()._recoverUsed?.(a)) problems.push('Recover was already used this scene');
       if (n === 'strike' || n === 'unarmed attack' || weaponNamed) strikes.push(n === 'unarmed attack' ? { name: 'unarmed' } : (weaponNamed ?? weapons[0] ?? { name: 'unarmed' }));
       spent += c;
@@ -340,7 +379,8 @@
     const foc = res(a, 'foc');
     const focusNeed = Math.max(intent.focus ?? 0, strikeFocus);
     if (focusNeed && foc && focusNeed > foc.value) problems.push(`spends ${focusNeed} focus but has ${foc.value}`);
-    return { ok: problems.length === 0, problems, notes, plan: { budget, moveActions, actionCost: spent, moved, destination: pos.cell ?? T().label(pos.col, pos.row) }, targets };
+    const stanceNote = stanceAtStart !== stance?.name ? `${stanceAtStart ?? 'none'} → ${stance?.name ?? 'none'}` : stanceAtStart;
+    return { ok: problems.length === 0, problems, notes, plan: { budget, moveActions, actionCost: spent, moved, destination: pos.cell ?? T().label(pos.col, pos.row), stance: stanceNote }, targets };
   }
 
   // ------------------------------------------------------------- sheets and party (no campaign content: all read from Foundry)
@@ -374,8 +414,15 @@
   function summaryOf(i, max = 220) {
     let s = plainText(i.system?.description?.short);
     if (!s) s = plainText(i.system?.description?.value, { dropFlavor: true });
-    if (s.length > max) { const cut = s.slice(0, max); s = (cut.lastIndexOf('. ') > max / 2 ? cut.slice(0, cut.lastIndexOf('. ') + 1) : cut.replace(/\s+\S*$/, '') + '…'); }
-    return s;
+    return clip(s, max);
+  }
+  const clip = (s, max) => { if (s.length <= max) return s; const cut = s.slice(0, max); return cut.lastIndexOf('. ') > max / 2 ? cut.slice(0, cut.lastIndexOf('. ') + 1) : cut.replace(/\s+\S*$/, '') + '…'; };
+  // A stance's rule: from "While in this stance" on (Vigilant Stance's text starts with how stances work in general),
+  // without the general stance rules that follow it.
+  function stanceRule(i, max = 320) {
+    let s = plainText(i.system?.description?.short) || plainText(i.system?.description?.value, { dropFlavor: true });
+    const k = s.search(/while in this stance/i); if (k > 0) s = s.slice(k);
+    return clip(s.replace(/\s*You can enter a stance you know[\s\S]*$/i, ''), max);
   }
   // Basic actions (Strike, Dodge, Recover…) are common to everyone, so ability lists leave them out.
   const isBasic = i => i.type === 'action' && i.system?.type === 'basic';
@@ -440,6 +487,8 @@
     if (money.length) L.push(`Money: ${money.join(', ')}`);
     const inj = a.items.filter(i => i.type === 'injury').map(i => i.name);
     L.push(`Conditions: ${[...(a.statuses ?? [])].join(', ') || 'none'}. Injuries: ${inj.join(', ') || 'none'}.`);
+    const st = stanceOf(a); // the rule summary is in the talents list above
+    if (st || a.items.some(i => i.type === 'talent' && i.system?.modality === 'stance')) L.push(`Stance: ${st?.name ?? 'none'}.`);
     if (allies) {
       const others = partyActors().filter(o => o.id !== a.id);
       L.push(others.length ? 'ALLIES (what each party member can openly do):' : 'ALLIES: none set (GM.setParty).');
@@ -450,12 +499,13 @@
       }
     }
     const text = L.join('\n').replace(/&/g, 'and').replace(/=/g, ':').replace(/\?/g, '');
+    T()._keep?.('sheetFor', text); // GM.page(i) for the full text
     return { name: a.name, text };
   }
 
   Hooks.once('ready', () => {
     if (!game.user.isGM || !globalThis.GM) return;
-    Object.assign(globalThis.GM, { perceptionFor, checkIntent, sheetFor, setParty, party: () => partyActors().map(a => a.name), setHiddenFromParty, setShort });
+    Object.assign(globalThis.GM, { perceptionFor, checkIntent, sheetFor, setParty, party: () => partyActors().map(a => a.name), setHiddenFromParty, setShort, stance: key => stanceOf(T()._actorFor(key).actor), setStance });
   });
-  globalThis.ClaudeGMPerception = { perceptionFor, checkIntent, viewerFor, sheetFor, setParty, setHiddenFromParty, setShort };
+  globalThis.ClaudeGMPerception = { perceptionFor, checkIntent, viewerFor, sheetFor, setParty, setHiddenFromParty, setShort, stanceOf, setStance };
 })();

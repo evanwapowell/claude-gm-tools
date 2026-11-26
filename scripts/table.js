@@ -19,7 +19,7 @@
     if (p.hidden) tags.push('HIDDEN');
     const res = [`hp ${hp(p.hp)}`, `foc ${hp(p.focus)}`];
     if (p.inv) res.push(`inv ${hp(p.inv)}`);
-    const cond = [...(p.conditions ?? []), ...(p.injuries ?? []).map(i => `injury:${i}`), ...(p.recover === 'used' ? ['recover used'] : [])];
+    const cond = [...(p.conditions ?? []), ...(p.injuries ?? []).map(i => `injury:${i}`), ...(p.recover === 'used' ? ['recover used'] : []), ...(p.stance ? [`stance:${p.stance}`] : [])];
     return `${p.name} @${p.cell} ${res.join(' ')}${cond.length ? ` [${cond.join(', ')}]` : ''} (${tags.join(', ')})`;
   }
 
@@ -54,13 +54,25 @@
       const b = GM.board();
       out.scene = `${b.scene.name} | players see "${b.scene.navName ?? ''}" | ${b.scene.active ? 'ACTIVE' : 'not active'} | grid ${b.scene.cols}x${b.scene.rows} coords ${b.scene.coords}`;
       out.pieces = b.pieces.map(pieceLine);
+      // Active stances with their rule summary (the talent's own short description).
+      const st = b.pieces.filter(p => p.stance).map(p => { const s = globalThis.ClaudeGMPerception?.stanceOf?.(canvas.scene.tokens.get(p.id)?.actor); return s ? `${p.name}: ${s.name}${s.summary ? `. ${s.summary}` : ''}` : null; }).filter(Boolean);
+      if (st.length) out.stances = st;
     } else out.scene = 'no scene viewed';
     out.combat = combatLines();
     try { const en = GM.endeavorState(); if (en.length) out.endeavors = en.map(e => `${e.title}: ${e.successes} succ, ${e.failures} fail${e.shown ? '' : ' (hidden)'}${e.result ? ` → ${e.result}` : ''}`); } catch { /* none */ }
     const audio = GM.nowPlaying(); if (audio.length) out.audio = audio.map(p => `${p.playlist}: ${p.sounds.join(', ')}`);
     out.online = game.users.filter(u => u.active).map(u => u.name);
+    GM._keep?.('turn', turnText(out)); // GM.page(i) re-reads this without consuming events again
     return out;
   }
+  const turnText = o => [
+    `seq ${o.seq}`, `Events:${o.events.length ? '' : ' none'}`, ...o.events.map(e => `  ${e}`),
+    `Scene: ${o.scene}`, ...(o.pieces ? ['Pieces:', ...o.pieces.map(p => `  ${p}`)] : []),
+    ...(o.stances ? ['Stances:', ...o.stances.map(s => `  ${s}`)] : []),
+    ...(o.combat ? [`Combat round ${o.combat.round}, current: ${o.combat.current}`, ...o.combat.order.map(x => `  ${x}`)] : []),
+    ...(o.endeavors ? ['Endeavors:', ...o.endeavors.map(x => `  ${x}`)] : []),
+    ...(o.audio ? [`Audio: ${o.audio.join('; ')}`] : []), `Online: ${o.online.join(', ')}`
+  ].join('\n');
 
   const sumDice = roll => roll.dice.reduce((n, d) => n + d.results.filter(x => typeof x === 'number').reduce((a, b) => a + b, 0), 0);
 
@@ -71,7 +83,9 @@
    *  move: 'C7' or ['C7','D8'] (walls checked; stops the turn if blocked unless continueIfBlocked)
    *  say: an in-character line posted in Foundry chat as the NPC
    *  attack: { item, target, defense: 'phy'|'cog'|'spi' (default 'phy'), graze: 'auto'|'free'|false, crit: 'auto'|false,
-   *            apply: true, ignoreLos: false, rollMode } or an array of them
+   *            advantage, disadvantage (they cancel), plotDie, bonusDamage: n (e.g. a charge; added to any hit, graze or
+   *            crit and applied in the same damage call, so deflect counts once), apply: true, ignoreLos: false, rollMode }
+   *          or an array of them
    *  skill: { id, dc, advantage, disadvantage, rollMode }
    *  conditions: [[tokenKey, statusId, true|false], ...]
    */
@@ -103,7 +117,8 @@
       const sight = GM.los(td.id, tgt.id);
       if (sight.verdict === 'blocked' && !a.ignoreLos) { log.push(`${a.item} vs ${tgt.name}: no line of sight, not attempted`); continue; }
       try { tgt.object?.setTarget(true, { releaseOthers: true, groupSelection: false }); } catch { /* targeting is cosmetic */ }
-      const msgs = await GM.rollItem(td.id, a.item, { rollMode: a.rollMode });
+      const msgs = await GM.rollItem(td.id, a.item, { rollMode: a.rollMode, advantage: a.advantage, disadvantage: a.disadvantage, plotDie: a.plotDie });
+      const mode = a.advantage && !a.disadvantage ? ' (adv)' : a.disadvantage && !a.advantage ? ' (dis)' : '';
       try { tgt.object?.setTarget(false, { releaseOthers: true }); } catch { /* ignore */ }
       const m = msgs.find(x => x.rolls?.length) ?? {};
       const rolls = m.rolls ?? [];
@@ -133,12 +148,13 @@
           await GM.setResource(td.id, 'foc', actor.system.resources.foc.value - 1);
         }
       }
+      const bonus = amount > 0 ? Number(a.bonusDamage) || 0 : 0;
       let applied = '';
       if (amount > 0 && a.apply !== false) {
-        const r = await GM.damage(tgt.id, amount, type);
+        const r = await GM.damage(tgt.id, bonus ? [amount, bonus] : amount, type); // one call: deflect subtracted once
         applied = ` → ${tgt.name} hp ${r.hp.before}→${r.hp.after}/${r.hp.max}`;
       }
-      log.push(`${item?.name ?? a.item} vs ${tgt.name}: ${atkRoll.total} vs ${defKey} ${def} → ${outcome}${amount ? ` ${amount}${type ? ' ' + type : ''}` : ''}${m.opportunity ? ' [OPP]' : ''}${m.complication ? ' [COMP]' : ''}${applied}`);
+      log.push(`${item?.name ?? a.item}${mode} vs ${tgt.name}: ${atkRoll.total} vs ${defKey} ${def} → ${outcome}${amount ? ` ${amount}${bonus ? `+${bonus} bonus` : ''}${type ? ' ' + type : ''}` : ''}${m.opportunity ? ' [OPP]' : ''}${m.complication ? ' [COMP]' : ''}${applied}`);
     }
 
     if (spec.skill) {

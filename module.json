@@ -2,7 +2,7 @@
   "id": "claude-gm-tools",
   "title": "Claude GM Tools",
   "description": "Helper API, endeavor tracker and event feed for a Cosmere RPG table where an AI assistant runs the game through the browser.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "compatibility": {
     "minimum": "13",
     "verified": "13.351"
@@ -48,5 +48,5 @@
   "languages": [],
   "url": "https://github.com/evanwapowell/claude-gm-tools",
   "manifest": "https://github.com/evanwapowell/claude-gm-tools/releases/latest/download/module.json",
-  "download": "https://github.com/evanwapowell/claude-gm-tools/releases/download/v0.5.0/module.zip"
+  "download": "https://github.com/evanwapowell/claude-gm-tools/releases/download/v0.6.0/module.zip"
 }
